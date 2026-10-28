@@ -2553,12 +2553,24 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
 
     def _in_bot_thread(self, message: Any) -> bool:
         """Thread the bot already joined skips the mention check — unless
-        thread_require_mention (multi-bot threads) gates threads like channels."""
-        return (
-            isinstance(message.channel, discord.Thread)
-            and str(message.channel.id) in self._threads
-            and not self._discord_thread_require_mention()
-        )
+        thread_require_mention (multi-bot threads) gates threads like channels.
+
+        A thread the bot *owns* counts as joined even if the tracker never saw it: threads opened
+        with the bot token outside this adapter (REST scripts, the discord tool, cron handoffs)
+        never pass through a ``mark()`` site, because the bot's own messages are not admitted."""
+        channel = message.channel
+        if not isinstance(channel, discord.Thread) or self._discord_thread_require_mention():
+            return False
+        return str(channel.id) in self._threads or self._is_untracked_owned_thread(channel)
+
+    def _is_untracked_owned_thread(self, channel: Any) -> bool:
+        """A bot-owned thread the tracker has not seen yet: its bot posts were sent outside any
+        session (REST script, cron handoff, discord tool), so they are context, not transcript."""
+        if not isinstance(channel, discord.Thread) or str(channel.id) in self._threads:
+            return False
+        bot_user = self._client.user if self._client else None
+        owner_id = getattr(channel, "owner_id", None)
+        return bot_user is not None and owner_id is not None and str(owner_id) == str(bot_user.id)
 
     async def _dispatch_recovered_message(self, message: Any) -> bool:
         """Run one recovered message through the live Discord ingress gates."""
@@ -5217,10 +5229,13 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
 
     async def _fetch_channel_context(
         self, channel: Any, before: DiscordMessage, reply_target: Optional[Any] = None,
+        *, include_own_messages: bool = False,
     ) -> str:
         """Fetch recent channel messages; returns a ``[Recent channel messages]`` block or "".
         Scans back from *before* to the bot's own message or ``history_backfill_limit``; with
-        ``reply_target`` a second scan ending at the target is merged chronologically, deduped by ID."""
+        ``reply_target`` a second scan ending at the target is merged chronologically, deduped by ID.
+        ``include_own_messages`` keeps the bot's messages as context instead of stopping at them,
+        for threads whose bot posts never went through a session (opened outside the adapter)."""
         limit = self._discord_history_backfill_limit()
         if limit <= 0:
             return ""
@@ -5231,7 +5246,7 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
         _cached_id = self._last_self_message_id.get(channel_id)
         _after_obj = None
         try:
-            if _cached_id and int(_cached_id) < int(before.id):
+            if _cached_id and not include_own_messages and int(_cached_id) < int(before.id):
                 _after_obj = discord.Object(id=int(_cached_id))
         except (ValueError, TypeError):
             pass  # Malformed cache entry — fall back to cold-start scan
@@ -5294,7 +5309,7 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
                 ):
                     continue
                 # Partition point: our own conversational message (needed for cold start).
-                if msg.author == self._client.user:
+                if msg.author == self._client.user and not include_own_messages:
                     break
                 line = _keep(msg)
                 if line is None:
@@ -6292,6 +6307,7 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
                 _backfill_text = await self._fetch_channel_context(
                     message.channel, before=message,
                     reply_target=self._reply_target(message.reference) if _is_reply else None,
+                    include_own_messages=self._is_untracked_owned_thread(message.channel),
                 )
                 if _backfill_text:
                     _channel_context = _backfill_text
