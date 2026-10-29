@@ -409,7 +409,7 @@ When enabled, the bot only responds in server channels when directly `@mentioned
 
 **Type:** boolean — **Default:** `false`
 
-By default, once the bot has participated in a thread (auto-created on `@mention` or replied in once), it keeps responding to every subsequent message in that thread without needing to be `@mentioned` again. That's the right default for one-on-one conversations.
+By default, once the bot has participated in a thread (auto-created on `@mention`, replied in once, or opened with the bot's own token — e.g. by a script or a scheduled job), it keeps responding to every subsequent message in that thread without needing to be `@mentioned` again. That's the right default for one-on-one conversations.
 
 In **multi-bot threads** where users address one bot per turn, this default becomes a footgun — every other bot in the thread also fires on every message, burning credits and spamming the channel. Set `thread_require_mention: true` to disable the in-thread shortcut and gate threads the same way channels are gated. Explicit `@mentions` still work as before.
 
@@ -783,6 +783,26 @@ The buttons disable themselves once a choice is made so duplicate clicks don't d
 ### Prompt layout
 
 Interactive prompts (command approvals, `clarify` questions, and slash-command confirmations) share one layout: the **plain message** carries the full payload — the command and why it was flagged plus the approval deadline, or the question and reply hint — the **embed card** underneath is a header only, and the buttons sit below the card. Everything you need to decide is in the plain text, so the prompt reads correctly on clients that hide or detach embeds, and nothing is shown twice on clients that render them.
+
+`approvals.discord_prompt_timeout` controls Discord's interactive button views for
+command approvals, clarification questions, update prompts, and slash-command
+confirmations. It defaults to 300 seconds, with a minimum of 30 seconds and the same
+platform-safe upper bound as `approvals.timeout`.
+
+`approvals.timeout` separately controls how long a command waits for approval. To
+allow one hour for both the command and its Discord buttons, set both in the owning
+profile's `config.yaml`:
+
+```yaml
+approvals:
+  timeout: 3600
+  discord_prompt_timeout: 3600
+```
+
+Each command-approval card answers its own request. Its controls retire when that
+request is answered, cancelled, or expires, even if the Discord view timeout is
+longer. A shorter Discord timeout retires the buttons without extending or ending
+the underlying approval wait.
 
 ## Home Channel
 
